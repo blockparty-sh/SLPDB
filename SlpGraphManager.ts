@@ -594,6 +594,14 @@ export class SlpGraphManager {
             }
         }
     }
+
+    getToken(tokenId: txid): SlpTokenGraph | undefined {
+        return this._tokens.get(tokenId);
+    }
+
+    containsToken(tokenId: txid): boolean {
+        return this._tokens.has(tokenId);
+    }
 }
 
 export interface SlpTransactionDetailsTnaDbo {

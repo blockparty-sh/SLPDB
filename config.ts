@@ -13,8 +13,12 @@ export interface RpcConfig {
 	protocol: string; user: string; pass: string; host: string; port: string; limit: number; 
 }
 
+export interface CommandListenerConfig { 
+	url: string;
+}
+
 export class Config {
-	static rpc = {
+	static rpc: RpcConfig = {
 		'protocol': process.env.rpc_protocol ? process.env.rpc_protocol : 'http',
 		'user': process.env.rpc_user ? process.env.rpc_user : 'bitcoin',
 		'pass': process.env.rpc_pass ? process.env.rpc_pass : 'password',
@@ -25,6 +29,9 @@ export class Config {
 	static grpc = {
 		url: Boolean(process.env.grpc_url) ? process.env.grpc_url : undefined, 
 		certPath: Boolean(process.env.grpc_certPath) ? process.env.grpc_certPath : undefined
+	}
+	static command_listener: CommandListenerConfig = {
+		url: process.env.command_listener_url ? process.env.command_listener_url : "127.0.0.1:50051"
 	}
 	static db: DbConfig = {
 		name: process.env.db_name ? process.env.db_name : 'slpdb',

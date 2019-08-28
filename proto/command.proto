@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package proto;
+
+service ControlService {
+	rpc reprocess (TokenId) returns (ReprocessResult) {}
+}
+
+message TokenId {
+	bytes tokenId = 1;
+}
+
+message ReprocessResult {
+    bool success = 1;
+}

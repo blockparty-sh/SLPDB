@@ -58,12 +58,14 @@ export class Bit {
     blockHashIgnoreSetList = new SetList<string>(10);
     _slpGraphManager!: SlpGraphManager;
     _zmqItemQueue: pQueue<pQueue.DefaultAddOptions>;
+    _processingQueueItems: number;
     network!: string;
     notifications!: Notifications;
 
     constructor() { 
         this._zmqItemQueue = new pQueue({ concurrency: 1, autoStart: true });
         this.outsock.bindSync('tcp://' + Config.zmq.outgoing.host + ':' + Config.zmq.outgoing.port);
+        this._processingQueueItems = 0;
     }
 
     slp_txn_filter(txnhex: string): boolean {
@@ -275,28 +277,32 @@ export class Bit {
         let self = this;
         let onBlockHash = function(blockHash: Buffer) {
             self._zmqItemQueue.add(async function() {
+                ++self._processingQueueItems;
                 try {
                     let hash = blockHash.toString('hex');
                     if(self.blockHashIgnoreSetList.has(hash)) {
                         console.log('[ZMQ-SUB] Block message ignored:', hash);
-                        return;
+                    } else {
+                        self.blockHashIgnoreSetList.push(hash);
+                        console.log('[ZMQ-SUB] New block found:', hash);
+                        await sync(self, 'block', hash);
+                        if(!self._slpGraphManager.zmqPubSocket)
+                            self._slpGraphManager.zmqPubSocket = self.outsock;
+                        if(self._slpGraphManager.onBlockHash)
+                            self._slpGraphManager.onBlockHash!(hash!);
                     }
-                    self.blockHashIgnoreSetList.push(hash);   
-                    console.log('[ZMQ-SUB] New block found:', hash);
-                    await sync(self, 'block', hash);
-                    if(!self._slpGraphManager.zmqPubSocket)
-                        self._slpGraphManager.zmqPubSocket = self.outsock;
-                    if(self._slpGraphManager.onBlockHash)
-                        self._slpGraphManager.onBlockHash!(hash!);
                 } catch(err) {
                     console.log(err);
                     process.exit();
                 }
+                --self._processingQueueItems;
             })
         }
 
         let onRawTxn = function(message: Buffer) {
             self._zmqItemQueue.add(async function() {
+                ++self._processingQueueItems;
+
                 try {
                     let rawtx = message.toString('hex');
                     let hash = Buffer.from(bitbox.Crypto.hash256(message).toJSON().data.reverse()).toString('hex');
@@ -315,6 +321,8 @@ export class Bit {
                     console.log(err);
                     process.exit();
                 }
+
+                --self._processingQueueItems;
             })
         }
         this.notifications = new Notifications({ 
@@ -524,5 +532,21 @@ export class Bit {
     async processCurrentMempoolForTNA() {
         let items = await this.requestSlpMempool();
         await this.db.unconfirmedSync(items);
+    }
+
+    pauseProcessing() {
+        this._zmqItemQueue.pause();
+    }
+
+    unpauseProcessing() {
+        this._zmqItemQueue.start();
+    }
+
+    isProcessingQueueItems(): boolean {
+        return this._processingQueueItems > 0;
+    }
+
+    getSlpGraphManager(): SlpGraphManager {
+        return this._slpGraphManager;
     }
 }

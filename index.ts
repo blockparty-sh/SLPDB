@@ -10,6 +10,8 @@ import { SlpGraphManager } from './SlpGraphManager';
 import { RpcClient } from './rpc';
 const rpc = new RpcClient({useGrpc: Boolean(Config.grpc.url) });
 
+import { CommandListener } from './CommandListener';
+
 const db = new Db();
 const bit = new Bit();
 
@@ -73,13 +75,18 @@ const daemon = {
 
         // Every minute - Check mempool transactions - ZMQ failsafe
         setInterval(async function() {
+            // TODO pause this
             await bit.checkForMissingMempoolTxns();
         }, 60000);
 
         // Every minute - Check ZMQ block count - ZMQ failsafe
         // setInterval(async function() {
+            // TODO pause this
         //     await bit.checkCurrentBlockHeight();
         // }, 60000);
+
+        CommandListener.init(Config.command_listener.url, bit);
+        console.log('Command Listener running at http://${Config.command_listener.url}');
     }
 }
 

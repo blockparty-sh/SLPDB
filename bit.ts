@@ -10,7 +10,6 @@ import * as zmq from 'zeromq';
 import { BlockHeaderResult } from 'bitcoin-com-rest';
 import { BITBOX } from 'bitbox-sdk';
 import * as bitcore from 'bitcore-lib-cash';
-import { Slp, SlpTransactionType } from 'slpjs';
 import { RpcClient } from './rpc';
 import SetList from './SetList';
 import { SlpGraphManager } from './SlpGraphManager';
@@ -22,7 +21,6 @@ const Block = require('bcash/lib/primitives/block');
 const BufferReader = require('bufio/lib/reader');
 
 const bitbox = new BITBOX();
-const slp = new Slp(bitbox);
 
 export enum SyncType {
     "Mempool", "Block"
@@ -334,30 +332,12 @@ export class Bit {
         console.log('[INFO] Listening for blockchain events...');
     }
 
-    // This method should only be used after initial startup phase is done building Token Graphs, to clean up unused / invalid SLP txns
+    // This method is called at the end of processing each block
     async handleConfirmedTxnsMissingSlpMetadata() {
         let missing = await Query.queryForConfirmedMissingSlpMetadata();
         if(missing) {
             await this.asyncForEach(missing, async (txid:string) => {
-                let tx = await this.db.confirmedFetch(txid);
-                let txnhex = <string>await this.rpc.getRawTransaction(txid);
-                let txn: bitcore.Transaction = new bitcore.Transaction(txnhex);
-                let slpParseError = "SLP transaction not in any graph; This transaction probably contains invalid inputs.";
-                let details: any = null;
-                try {
-                    details = slp.parseSlpOutputScript(txn.outputs[0]._scriptBuffer);
-                } catch(error) {
-                    slpParseError = "SLP transaction not in any graph; " + error.message;
-                }
-
-                if(details && details.transactionType === SlpTransactionType.SEND) {
-                    if(!(await this.db.confirmedFetch(details.tokenIdHex))) {
-                        slpParseError = "SLP transaction not in any graph; Token ID does not exist: " + details.tokenIdHex; 
-                    }
-                }
-
-                tx!.slp! = { valid: false, detail: details, invalidReason: slpParseError, "schema_version": Config.db.token_schema_version }
-                await this.db.db.collection('confirmed').replaceOne({ "tx.h": txid },  tx)
+                await this._slpGraphManager.updateTxnCollections(txid);
             })
         }
     }
@@ -455,6 +435,7 @@ export class Bit {
                 if (lastCheckpoint.height < currentHeight && hash) {
                     await self.checkForMissingMempoolTxns();
                     await self.removeExtraneousMempoolTxns();
+                    await self.handleConfirmedTxnsMissingSlpMetadata();
                 }
             
                 if (lastCheckpoint.height === currentHeight) {

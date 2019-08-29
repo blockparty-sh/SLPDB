@@ -60,7 +60,7 @@ export class SlpGraphManager {
             let txns = Array.from(syncResult.filteredContent.get(SyncFilterTypes.SLP)!)
             await this.asyncForEach(txns, async (txPair: [string, string], index: number) =>
             {
-                console.log("PROCESSING SLP GRAPH UPDATE FOR:", txPair[0]);
+                console.log("[INFO] Processing possible SLP txn:", txPair[0]);
                 let txn = new bitcore.Transaction(txPair[1]);
                 let tokenDetails = this.parseTokenTransactionDetails(txPair[1]);
                 let tokenId = tokenDetails ? tokenDetails.tokenIdHex : null;
@@ -70,6 +70,7 @@ export class SlpGraphManager {
                     if(!this._tokens.has(tokenId)) {
                         if(tokenDetails) {
                             this._transaction_lock = true;
+                            console.log("[INFO] Creating new token graph for tokenId:", tokenId);
                             await this.createNewTokenGraph({ tokenId });
                             this._transaction_lock = false;
                             await this.publishZmqNotification(txPair[0]);
@@ -79,7 +80,7 @@ export class SlpGraphManager {
                         }
                     }
                     else {
-                        console.log("UPDATING GRAPH FOR:", tokenId);
+                        console.log("[INFO] Updating graph for:", tokenId);
                         while(this._transaction_lock) {
                             console.log("[INFO] onTransactionHash update is locked until processing for new token graph is completed.")
                             await sleep(1000);
@@ -87,21 +88,22 @@ export class SlpGraphManager {
                         this._tokens.get(tokenId)!.queueTokenGraphUpdateFrom({ txid: txPair[0]} );
                     }
                 } else {
+                    console.log("[INFO] Skipping: TokenId is being filtered.")
                     await this.updateTxnCollections(txPair[0])
                 }
 
                 // Based on the spent inputs, look for associated tokenIDs of those inputs and update those token graphs also
-                let inputTokenIds: string[] = [];
-                for(let i = 0; i < txn.inputs.length; i++) {
-                    let inputTokenId = await Query.queryForTxnTokenId(txn.inputs[i].prevTxId.toString('hex'));
-                    if(inputTokenId && inputTokenId !== tokenId && this._tokens.has(inputTokenId) && !inputTokenIds.includes(inputTokenId)) {
-                        inputTokenIds.push(inputTokenId);
-                        this._tokens.get(inputTokenId)!.queueTokenGraphUpdateFrom({txid: txn.inputs[i].prevTxId.toString('hex'), isParent: true});
-                    }
-                    else {
-                        console.log("[INFO] SLP txn input:", i, "does not need updated for txid:", txPair[0]);
-                    }
-                }
+                // let inputTokenIds: string[] = [];
+                // for(let i = 0; i < txn.inputs.length; i++) {
+                //     let inputTokenId = await Query.queryForTxnTokenId(txn.inputs[i].prevTxId.toString('hex'));
+                //     if(inputTokenId && inputTokenId !== tokenId && this._tokens.has(inputTokenId) && !inputTokenIds.includes(inputTokenId)) {
+                //         inputTokenIds.push(inputTokenId);
+                //         this._tokens.get(inputTokenId)!.queueTokenGraphUpdateFrom({txid: txn.inputs[i].prevTxId.toString('hex'), isParent: true});
+                //     }
+                //     else {
+                //         console.log("[INFO] SLP txn input:", i, "does not need updated for txid:", txPair[0]);
+                //     }
+                // }
             })
         }
     }
@@ -192,7 +194,7 @@ export class SlpGraphManager {
             }
 
             // fix any missed token timestamps 
-            // await this.fixMissingTokenTimestamps();
+            await this.fixMissingTokenTimestamps();
         }
     }
 
@@ -204,18 +206,20 @@ export class SlpGraphManager {
     }
 
     async fixMissingTokenTimestamps() {
-        let tokens = await Query.getNullTokenGenesisTimestamps();
+        let tokens = await Query.queryForConfirmedTokensMissingTimestamps();
         if(tokens) {
-            await this.asyncForEach(tokens, async (tokenId: string) => {
-                console.log("[INFO] Checking for missing timestamps for:", tokenId);
-                let timestamp = await Query.getConfirmedTxnTimestamp(tokenId);
-                if (timestamp && this._tokens.has(tokenId)) {
-                    let token = this._tokens.get(tokenId)!;
-                    token._tokenDetails.timestamp = timestamp;
-                    await this.db.tokenInsertReplace(token.toTokenDbObject());
-                } else if(!this._tokens.has(tokenId)) {
-                    await this.createNewTokenGraph({ tokenId });
-                }
+            await this.asyncForEach(tokens, async (token: { txid: string, blk: any }) => {
+                console.log("[INFO] Checking for missing timestamps for:", token.txid, token.blk.t);
+                let timestamp = SlpTokenGraph.FormatUnixToDateString(token.blk.t);
+                if (timestamp && this._tokens.has(token.txid)) {
+                    let t = this._tokens.get(token.txid)!;
+                    t._tokenDetails.timestamp = timestamp;
+                    t._tokenStats.block_created = token.blk.i;
+                    await this.db.tokenInsertReplace(t.toTokenDbObject());
+                    return;
+                } 
+                await this.createNewTokenGraph({ tokenId: token.txid })
+                await this.fixMissingTokenTimestamps();
             })
         }
         return tokens;
@@ -304,7 +308,7 @@ export class SlpGraphManager {
                 // Here we fix missing slp data (should only happen after block sync on startup)
                 if(!tna.slp)
                     tna.slp = {} as TNATxnSlpDetails;
-                if(tna.slp && (tna.slp.schema_version !== Config.db.token_schema_version || !tna.slp.valid)) {
+                if(tna.slp.schema_version !== Config.db.token_schema_version || !tna.slp.valid) {
                     console.log("[INFO] Updating", collection, "TNATxn SLP data for", txid);
                     let isValid: boolean|null = null;
                     let details: SlpTransactionDetailsTnaDbo|null = null;
@@ -321,17 +325,13 @@ export class SlpGraphManager {
                             invalidReason = "SLP Parsing Error: " + err.message;
                         }
                         if(tokenDetails) {
-                            try {
-                                if(tokenDetails.transactionType === SlpTransactionType.GENESIS || tokenDetails.transactionType === SlpTransactionType.MINT)
-                                    tokenId = tokenDetails.tokenIdHex;
-                                else if(tokenDetails.transactionType !== SlpTransactionType.SEND)
-                                    tokenId = tna.tx.h;
-                                else
-                                    throw Error("updateTxnCollections: Unknown SLP transaction type")
-                            } catch(err) {
-                                console.log("[ERROR] updateTxnCollections(): Failed to get tokenId");
-                                console.log(err.message);
-                                process.exit()
+                            if([SlpTransactionType.MINT, SlpTransactionType.SEND].includes(tokenDetails.transactionType))
+                                tokenId = tokenDetails.tokenIdHex;
+                            else if(tokenDetails.transactionType === SlpTransactionType.GENESIS)
+                                tokenId = txid;
+                            else {
+                                isValid = null;
+                                invalidReason = "Unable to set token ID";
                             }
                         }
                     }
@@ -376,9 +376,7 @@ export class SlpGraphManager {
                             process.exit();
                         }
                     } else if(tokenId) {
-                        isValid = false;
-                        details = null;
-                        invalidReason = "TokenId specified is not valid.";
+                        invalidReason = 'Token ID is not being tracked. SLPDB may be still syncing or is not following this token.';
                     }
 
                     tna.slp.valid = isValid;
@@ -397,11 +395,18 @@ export class SlpGraphManager {
             }
         });
         if(count === 0) {
-            let txbBlockHash = <string>await this._rpcClient.getTransactionBlockHash(txid);
-            let blockindex = (<BlockHeaderResult>await this._rpcClient.getBlockInfo({ hash: txbBlockHash})).height;
-            Info.updateBlockCheckpoint(blockindex - 1, null);
-            console.log("[ERROR] Transaction not found! Block checkpoint has been updated to ", (blockindex - 1))
-            process.exit();
+            try {
+                if(tokenId) {
+                    let token = this._tokens.get(tokenId);
+                    if(token)
+                        token._graphTxns.delete(txid);
+                }
+            } catch(err) {
+                console.log(err);
+            }
+            let checkpoint = await Info.getBlockCheckpoint();
+            Info.updateBlockCheckpoint(checkpoint.height - 1, checkpoint.hash);
+            console.log("[ERROR] Transaction not found! Block checkpoint has been updated to ", (checkpoint.height - 1), checkpoint.hash)
         }
     }
 
@@ -517,8 +522,8 @@ export class SlpGraphManager {
             } else {
                 console.log("[WARN] Token's graph loaded using allowGraphUpdates=false.");
             }
-            await this.setAndSaveTokenGraph(graph);
             await this.updateTxnCollectionsForTokenId(token.tokenIdHex);
+            await this.setAndSaveTokenGraph(graph);
         }
         catch (err) {
             if (err.message.includes(throwMsg1) || err.message.includes(throwMsg2) || err.message.includes(throwMsg3) || err.message.includes(throwMsg4)) {
@@ -566,10 +571,16 @@ export class SlpGraphManager {
         let graph = new SlpTokenGraph(this.db, this);
         let txn = <string>await this._rpcClient.getRawTransaction(tokenId);
         let tokenDetails = this.parseTokenTransactionDetails(txn);
+
         if(tokenDetails) {
             console.log("########################################################################################################");
             console.log("NEW GRAPH FOR", tokenId);
             console.log("########################################################################################################");
+            
+            // add timestamp if token is already confirmed
+            let timestamp = await Query.getConfirmedTxnTimestamp(tokenId);
+            tokenDetails.timestamp = timestamp ? timestamp : undefined;
+            
             await graph.initFromScratch({ tokenDetails, processUpToBlock });
             await this.setAndSaveTokenGraph(graph);
             await this.updateTxnCollectionsForTokenId(tokenId);

@@ -69,21 +69,8 @@ const daemon = {
         await bit.checkForMissingMempoolTxns(undefined, true);
 
         await tokenManager.initAllTokens({ reprocessFrom });
-        await bit.handleConfirmedTxnsMissingSlpMetadata();
         await tokenManager.fixMissingTokenTimestamps();
-        await tokenManager.searchForNonSlpBurnTransactions();
-
-        // Every minute - Check mempool transactions - ZMQ failsafe
-        setInterval(async function() {
-            // TODO pause this
-            await bit.checkForMissingMempoolTxns();
-        }, 60000);
-
-        // Every minute - Check ZMQ block count - ZMQ failsafe
-        // setInterval(async function() {
-            // TODO pause this
-        //     await bit.checkCurrentBlockHeight();
-        // }, 60000);
+        await bit.handleConfirmedTxnsMissingSlpMetadata();
 
         CommandListener.init(Config.command_listener.url, bit);
         console.log('Command Listener running at http://${Config.command_listener.url}');

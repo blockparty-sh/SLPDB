@@ -32,7 +32,7 @@ export class CommandListener {
                     reprocessResult.setSuccess(false);
                     callback({
                         name: "NOT_FOUND",
-                        message: "tokenId not found"
+                        message: "tokenId("+tokenId+") not found"
                     }, reprocessResult);
                 }
             }
